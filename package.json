@@ -1,0 +1,29 @@
+{
+  "name": "blockwill",
+  "version": "1.0.0",
+  "private": true,
+  "description": "BlockWill - Blockchain-Based Digital Will & Inheritance Management System (academic prototype)",
+  "workspaces": [
+    "contracts",
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "blockchain": "npm run node --workspace contracts",
+    "compile": "npm run compile --workspace contracts",
+    "test:contracts": "npm run test --workspace contracts",
+    "deploy": "npm run deploy:local --workspace contracts",
+    "db:migrate": "npm run prisma:migrate --workspace backend",
+    "db:generate": "npm run prisma:generate --workspace backend",
+    "db:seed": "npm run seed --workspace backend",
+    "dev:backend": "npm run dev --workspace backend",
+    "dev:frontend": "npm run dev --workspace frontend",
+    "build:backend": "npm run build --workspace backend",
+    "build:frontend": "npm run build --workspace frontend",
+    "build": "npm run build:backend && npm run build:frontend",
+    "test:backend": "npm run test --workspace backend",
+    "lint": "npm run lint --workspace frontend && npm run lint --workspace backend",
+    "setup": "npm install && npm run compile && npm run db:generate"
+  },
+  "license": "MIT"
+}

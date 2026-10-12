@@ -1,0 +1,527 @@
+// BlockWill — Prisma schema
+// Stores application metadata only. Sensitive will contents live in
+// encrypted off-chain documents; the blockchain layer (see contracts/) is
+// the source of truth for hash integrity and lifecycle status. See
+// docs/database.md and docs/architecture.md for the on-chain/off-chain split.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------
+
+enum UserRole {
+  TESTATOR
+  BENEFICIARY
+  EXECUTOR
+  WITNESS
+  AUTHORITY
+  ADMIN
+}
+
+enum WillStatus {
+  DRAFT
+  ACTIVE
+  REVOKED
+  DEATH_VERIFICATION_PENDING
+  VERIFIED
+  INHERITANCE_IN_PROGRESS
+  EXECUTED
+  DISPUTED
+}
+
+enum ConditionType {
+  IMMEDIATE
+  AGE_BASED
+  TIME_LOCK
+  EXECUTOR_APPROVAL
+}
+
+enum AssetType {
+  CRYPTOCURRENCY
+  BANK_ACCOUNT
+  PROPERTY
+  VEHICLE
+  DIGITAL_ASSET
+  OTHER
+}
+
+enum WitnessStatus {
+  PENDING
+  SIGNED
+  DECLINED
+}
+
+enum VerificationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum DisputeReason {
+  INCORRECT_ALLOCATION
+  IDENTITY_ISSUE
+  INVALID_BENEFICIARY
+  SUSPECTED_FRAUD
+  DOCUMENT_ISSUE
+  OTHER
+}
+
+enum DisputeStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED
+  REJECTED
+}
+
+enum DistributionStatus {
+  PENDING
+  ELIGIBLE
+  DISTRIBUTED
+  LOCKED
+}
+
+enum NotificationType {
+  WILL_REGISTERED
+  WITNESS_REQUESTED
+  WITNESS_SIGNED
+  WILL_FINALIZED
+  WILL_REVOKED
+  DEATH_VERIFICATION_REQUESTED
+  DEATH_VERIFIED
+  EXECUTOR_APPROVAL_REQUIRED
+  EXECUTOR_APPROVED
+  BENEFICIARY_VERIFIED
+  INHERITANCE_EXECUTED
+  ASSET_DISTRIBUTED
+  DISPUTE_RAISED
+  DISPUTE_RESOLVED
+  GENERAL
+}
+
+enum BlockchainTxStatus {
+  PENDING
+  CONFIRMED
+  FAILED
+}
+
+enum BlockchainEventType {
+  WILL_CREATED
+  WITNESS_ADDED
+  WITNESS_SIGNED
+  WILL_DOCUMENT_UPDATED
+  WILL_FINALIZED
+  WILL_REVOKED
+  DEATH_VERIFICATION_REQUESTED
+  DEATH_VERIFIED
+  STATUS_CHANGED
+  EXECUTOR_NOMINATED
+  EXECUTOR_APPROVED
+  BENEFICIARY_ADDED
+  ASSETS_DEPOSITED
+  ASSETS_WITHDRAWN
+  BENEFICIARY_VERIFIED
+  INHERITANCE_STARTED
+  ASSET_DISTRIBUTED
+  INHERITANCE_EXECUTED
+  DISPUTE_RAISED
+  DISPUTE_RESOLVED
+}
+
+// ---------------------------------------------------------------------
+// Core identity
+// ---------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  fullName     String
+  role         UserRole
+  isDemoAccount Boolean @default(false)
+  dateOfBirth  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  wallets       Wallet[]
+  willsCreated  Will[]              @relation("TestatorWills")
+  beneficiaryOf Beneficiary[]
+  executorOf    ExecutorAssignment[]
+  witnessOf     Witness[]
+  auditLogs     AuditLog[]
+  notifications Notification[]
+  disputesRaised Dispute[]
+  verificationsHandled VerificationRequest[] @relation("AuthorityVerifications")
+
+  @@index([email])
+  @@index([role])
+}
+
+model Wallet {
+  id        String   @id @default(cuid())
+  userId    String
+  address   String   @unique
+  label     String?
+  isPrimary Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------
+// Will & related metadata
+// ---------------------------------------------------------------------
+
+model Will {
+  id               String     @id @default(cuid())
+  onChainId        String     @unique // bytes32 hex id used on WillRegistry
+  testatorId       String
+  title            String     @default("Last Will & Testament")
+  status           WillStatus @default(DRAFT)
+  version          Int        @default(1)
+  documentHash     String? // current SHA-256 hash (hex)
+  contractAddress  String? // WillRegistry address at time of registration
+  network          String     @default("hardhat-local")
+  registeredTxHash String?
+  finalizedAt      DateTime?
+  revokedAt        DateTime?
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  testator      User @relation("TestatorWills", fields: [testatorId], references: [id])
+
+  beneficiaries      Beneficiary[]
+  assets             Asset[]
+  executor           ExecutorAssignment?
+  witnesses          Witness[]
+  conditions         Condition[]
+  documents          Document[]
+  versions           WillVersion[]
+  verificationRequests VerificationRequest[]
+  inheritance        Inheritance?
+  disputes           Dispute[]
+  auditLogs          AuditLog[]
+  blockchainTxs      BlockchainTransaction[]
+
+  @@index([testatorId])
+  @@index([status])
+}
+
+model WillVersion {
+  id           String   @id @default(cuid())
+  willId       String
+  version      Int
+  documentHash String
+  snapshot     Json // structured snapshot of beneficiaries/assets/conditions at this version
+  createdAt    DateTime @default(now())
+
+  will Will @relation(fields: [willId], references: [id], onDelete: Cascade)
+
+  @@unique([willId, version])
+  @@index([willId])
+}
+
+model Beneficiary {
+  id                 String        @id @default(cuid())
+  willId             String
+  userId             String?
+  name               String
+  walletAddress      String
+  relationship       String
+  allocationBps      Int // basis points, 10000 = 100%
+  identityReference  String?
+  conditionType      ConditionType @default(IMMEDIATE)
+  conditionParam     DateTime?
+  distributionStatus DistributionStatus @default(PENDING)
+  distributedAmount  String? // decimal string of BWILL distributed
+  distributedTxHash  String?
+  verifiedAt         DateTime?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  will Will  @relation(fields: [willId], references: [id], onDelete: Cascade)
+  user User? @relation(fields: [userId], references: [id])
+  assets Asset[]
+  distributions InheritanceDistribution[]
+
+  @@index([willId])
+  @@index([walletAddress])
+}
+
+model Asset {
+  id              String    @id @default(cuid())
+  willId          String
+  beneficiaryId   String?
+  name            String
+  description     String?
+  assetType       AssetType
+  estimatedValue  Float
+  currency        String    @default("USD")
+  allocationBps   Int       @default(10000)
+  transferSimulated Boolean @default(false)
+  transferredAt   DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  will        Will         @relation(fields: [willId], references: [id], onDelete: Cascade)
+  beneficiary Beneficiary? @relation(fields: [beneficiaryId], references: [id])
+
+  @@index([willId])
+}
+
+model ExecutorAssignment {
+  id           String   @id @default(cuid())
+  willId       String   @unique
+  userId       String?
+  name         String
+  walletAddress String
+  email        String
+  relationship String
+  nominatedTxHash String?
+  approvedAt   DateTime?
+  approvedTxHash String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  will Will  @relation(fields: [willId], references: [id], onDelete: Cascade)
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([willId])
+}
+
+model Witness {
+  id            String        @id @default(cuid())
+  willId        String
+  userId        String?
+  name          String
+  walletAddress String
+  email         String?
+  status        WitnessStatus @default(PENDING)
+  signature     String? // wallet-signed message
+  signedTxHash  String?
+  signedAt      DateTime?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  will Will  @relation(fields: [willId], references: [id], onDelete: Cascade)
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([willId])
+}
+
+model Condition {
+  id          String        @id @default(cuid())
+  willId      String
+  description String
+  type        ConditionType
+  param       DateTime?
+  createdAt   DateTime      @default(now())
+
+  will Will @relation(fields: [willId], references: [id], onDelete: Cascade)
+
+  @@index([willId])
+}
+
+// ---------------------------------------------------------------------
+// Documents (encrypted off-chain storage, hash on-chain)
+// ---------------------------------------------------------------------
+
+model Document {
+  id             String   @id @default(cuid())
+  willId         String
+  fileName       String
+  mimeType       String
+  sizeBytes      Int
+  sha256Hash     String
+  encryptedPath  String // path to AES-256-GCM encrypted blob on disk
+  iv             String // hex
+  authTag        String // hex
+  version        Int      @default(1)
+  uploadedAt     DateTime @default(now())
+
+  will Will @relation(fields: [willId], references: [id], onDelete: Cascade)
+
+  @@index([willId])
+}
+
+// ---------------------------------------------------------------------
+// Death verification (mock authority)
+// ---------------------------------------------------------------------
+
+model VerificationRequest {
+  id                 String              @id @default(cuid())
+  willId             String
+  requestedById      String?
+  authorityId        String?
+  status             VerificationStatus  @default(PENDING)
+  certificateFileName String?
+  certificateHash    String?
+  requestTxHash      String?
+  decisionTxHash     String?
+  notes              String?
+  requestedAt        DateTime            @default(now())
+  decidedAt          DateTime?
+
+  will      Will  @relation(fields: [willId], references: [id], onDelete: Cascade)
+  authority User? @relation("AuthorityVerifications", fields: [authorityId], references: [id])
+
+  @@index([willId])
+  @@index([status])
+}
+
+// ---------------------------------------------------------------------
+// Inheritance execution
+// ---------------------------------------------------------------------
+
+model Inheritance {
+  id             String    @id @default(cuid())
+  willId         String    @unique
+  startedAt      DateTime?
+  startTxHash    String?
+  executedAt     DateTime?
+  executeTxHash  String?
+  totalEscrowed  String? // decimal string BWILL
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  will          Will                     @relation(fields: [willId], references: [id], onDelete: Cascade)
+  distributions InheritanceDistribution[]
+
+  @@index([willId])
+}
+
+model InheritanceDistribution {
+  id             String   @id @default(cuid())
+  inheritanceId  String
+  beneficiaryId  String
+  amount         String // decimal string BWILL
+  txHash         String?
+  distributedAt  DateTime @default(now())
+
+  inheritance Inheritance @relation(fields: [inheritanceId], references: [id], onDelete: Cascade)
+  beneficiary Beneficiary @relation(fields: [beneficiaryId], references: [id], onDelete: Cascade)
+
+  @@index([inheritanceId])
+  @@index([beneficiaryId])
+}
+
+// ---------------------------------------------------------------------
+// Disputes
+// ---------------------------------------------------------------------
+
+model Dispute {
+  id          String        @id @default(cuid())
+  willId      String
+  raisedById  String
+  reason      DisputeReason
+  description String
+  status      DisputeStatus @default(OPEN)
+  txHash      String?
+  resolution  String?
+  resolvedById String?
+  resolvedAt  DateTime?
+  createdAt   DateTime      @default(now())
+
+  will     Will @relation(fields: [willId], references: [id], onDelete: Cascade)
+  raisedBy User @relation(fields: [raisedById], references: [id])
+
+  @@index([willId])
+  @@index([status])
+}
+
+// ---------------------------------------------------------------------
+// Audit trail (immutable, append-only)
+// ---------------------------------------------------------------------
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  willId     String?
+  actorId    String?
+  actorRole  UserRole?
+  action     String
+  details    Json?
+  txHash     String?
+  blockNumber Int?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  will  Will? @relation(fields: [willId], references: [id], onDelete: Cascade)
+  actor User? @relation(fields: [actorId], references: [id])
+
+  @@index([willId])
+  @@index([actorId])
+  @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------
+// Notifications & email simulation
+// ---------------------------------------------------------------------
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  type      NotificationType
+  title     String
+  message   String
+  willId    String?
+  read      Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([read])
+}
+
+model EmailLog {
+  id        String   @id @default(cuid())
+  recipient String
+  subject   String
+  message   String
+  status    String   @default("SENT")
+  createdAt DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------
+// Blockchain integration
+// ---------------------------------------------------------------------
+
+model BlockchainTransaction {
+  id          String              @id @default(cuid())
+  willId      String?
+  txHash      String              @unique
+  eventType   BlockchainEventType
+  fromAddress String
+  toAddress   String?
+  contractName String
+  blockNumber Int?
+  gasUsed     String?
+  status      BlockchainTxStatus  @default(PENDING)
+  payload     Json?
+  createdAt   DateTime            @default(now())
+  confirmedAt DateTime?
+
+  will Will? @relation(fields: [willId], references: [id])
+
+  @@index([willId])
+  @@index([txHash])
+  @@index([eventType])
+}
+
+model DeployedContract {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  address   String
+  network   String
+  updatedAt DateTime @updatedAt
+}

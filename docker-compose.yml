@@ -1,0 +1,68 @@
+# Local development / demo stack for BlockWill.
+#
+# The blockchain layer (Hardhat local node + contract deployment) is
+# intentionally NOT containerized here — it is a fast, ephemeral dev
+# process best run directly on the host with `npm run blockchain` /
+# `npm run deploy` (see README.md). This compose file covers the pieces
+# that benefit from being containerized: the database, and optionally the
+# backend/frontend for a "just docker compose up" demo path.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: blockwill-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: blockwill
+      POSTGRES_PASSWORD: blockwill
+      POSTGRES_DB: blockwill
+    ports:
+      - "5432:5432"
+    volumes:
+      - blockwill_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U blockwill"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: blockwill-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      CORS_ORIGIN: http://localhost:5173
+      DATABASE_URL: postgresql://blockwill:blockwill@postgres:5432/blockwill?schema=public
+      JWT_SECRET: change-me-in-real-deployments
+      ENCRYPTION_KEY: 0000000000000000000000000000000000000000000000000000000000000000
+      BLOCKCHAIN_RPC_URL: http://host.docker.internal:8545
+      BLOCKCHAIN_CHAIN_ID: 31337
+    ports:
+      - "4000:4000"
+    volumes:
+      - blockwill_documents:/app/storage/documents
+      - ./shared/abi:/app/shared/abi:ro
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: blockwill-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      VITE_API_URL: http://localhost:4000/api
+    ports:
+      - "5173:80"
+
+volumes:
+  blockwill_pg_data:
+  blockwill_documents:
